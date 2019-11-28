@@ -21,6 +21,8 @@ requests_log = logging.getLogger("requests.packages.urllib3")
 requests_log.setLevel(logging.DEBUG)
 requests_log.propagate = True
 total_videos = 0
+total_files = 0
+useful_file_formats = {'pdf', 'zip'}
 
 def gethtml(resource_url):
     start = time.time()
@@ -79,8 +81,17 @@ def parse_section(section):
         exit("Unable to fetch Video listing")
     videolist = []
     global total_videos
+    global total_files
     parsetree = BeautifulSoup(httpresponse[1], 'lxml')
     course_main = parsetree.find('main')
+    downloadable_content = []
+    for link in course_main.find_all('a'):
+        file_format = link['href'].split('.')[-1].strip()
+        if link.string is not None:
+            if file_format in useful_file_formats and 'transcript' not in link.string.strip() and 'Transcript' not in link.string.strip():
+                downloadable_content.append("https://ocw.mit.edu" + link['href'])
+    total_files += len(downloadable_content)
+    section['files'] = downloadable_content
     if course_main['id'] == 'course_inner_media_gallery':
         for media in course_main.find_all(class_= 'medialisting'):
             videolink = media.find('a')
@@ -91,12 +102,26 @@ def parse_section(section):
             videolink = media.find('a')
             nav_page = gethtml("https://ocw.mit.edu" + videolink['href']+'/')
             page_parsetree = BeautifulSoup(nav_page[1], 'lxml')
-            if page_parsetree.find(id = 'media_embed'):
+            if page_parsetree.find(id = 'media_embed') or page_parsetree.find(class_= 'inline-video'):
                 videotitle = media.find('span')
                 videolist.append([videotitle.string.strip(), "https://ocw.mit.edu" + videolink['href']+'/'])
     elif course_main.find(id = 'media-embed') or course_main.find(class_= 'inline-video'):
+        popup_video = False
+        if course_main.find(class_= 'inline-video'):
+            inline_video = course_main.find(class_= 'inline-video')
+        else:
+            inline_video = course_main.find(id = 'media-embed')
+        for parent in inline_video.parents:
+            if parent.find(class_= 'popup_block'):
+                popup_video = True
+                break
+        if popup_video:
+            popup = course_main.find(class_='poplight pagecontainer')
+            video_link = popup['onclick'].split(',')[3]
+        else:
+            video_link = section['url']
         videotitle = parsetree.find('meta', {'name' : 'WT.cg_s'})
-        videolist.append([videotitle['content'].strip(), section['url']])
+        videolist.append([videotitle['content'].strip(), video_link])
     section['videos'] = videolist
     if len(videolist) is not 0:
         total_videos = total_videos + len(videolist)
@@ -136,8 +161,9 @@ def ocw_dl(course_url):
         extract_videoifno(course_structure)
         print(*course_structure, sep="\n")
         print('Total Videos: ', total_videos)
+        print('Total Files: ', total_files)
 
 
-ocw_dl('https://ocw.mit.edu/courses/electrical-engineering-and-computer-science/6-004-computation-structures-spring-2017/')
+ocw_dl('https://ocw.mit.edu/courses/economics/14-01sc-principles-of-microeconomics-fall-2011/')
     
         
