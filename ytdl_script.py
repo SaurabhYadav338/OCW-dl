@@ -44,6 +44,7 @@ class downloadlogger(object):
 
 def my_hook(progress):
     global pbar, new, lastknownsize
+    print(progress)
     if progress['status'] == 'downloading':
         if new == True:
             print('Downloading:', progress['filename'])
@@ -82,12 +83,6 @@ opts_format = {
     'listformats': 'true',
 }
 
-opts_download = {
-    'format': 'bestvideo',
-    'merge_output_format' : 'mkv',
-    'logger': downloadlogger(),
-    'progress_hooks': [my_hook],
-}
 
 def grabformats(videopage):
     with youtube_dl.YoutubeDL(opts_format) as ydl:
@@ -95,11 +90,18 @@ def grabformats(videopage):
     global format_codes
     format_codes = [int(entry[0:3].strip()) for entry in (availableformats.splitlines())[2:]]
     print(format_codes)
-    
+
+
 def downloadvideo(videopage):
     global start
+    opts_download = {
+        'format': 'bestvideo',
+        'merge_output_format': 'mkv',
+        'logger': downloadlogger(),
+        'progress_hooks': [my_hook],
+    }
     start = time.time()
     with youtube_dl.YoutubeDL(opts_download) as ydl:
         ydl.download([videopage])
         
-downloadvideo('https://ocw.mit.edu/courses/electrical-engineering-and-computer-science/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/lecture-videos/lecture-1-what-is-computation')
+"""downloadvideo('https://ocw.mit.edu/courses/electrical-engineering-and-computer-science/6-004-computation-structures-spring-2017/c1/c1s2/')"""

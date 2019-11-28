@@ -10,12 +10,17 @@ import urllib3
 import certifi
 import logging
 import time
+import re
+from ytdl_script import downloadvideo
+
+
 http = urllib3.PoolManager(cert_reqs='CERT_REQUIRED', ca_certs=certifi.where())
 logging.basicConfig() 
 logging.getLogger().setLevel(logging.DEBUG)
 requests_log = logging.getLogger("requests.packages.urllib3")
 requests_log.setLevel(logging.DEBUG)
 requests_log.propagate = True
+total_videos = 0
 
 def gethtml(resource_url):
     start = time.time()
@@ -26,28 +31,96 @@ def gethtml(resource_url):
     print("Successful")
     return [httpresponse.status, httpresponse.data]
 
-def get_sections(course_page):
+def generate_structure(course_page):
     parsetree = BeautifulSoup(course_page, 'lxml')
     navs = parsetree.find_all(id="course_nav")
-    sections = []
+    structure = []
     for nav in navs:
-        for section in nav.find_all('a'):
-            linktext = section.string
-            if linktext != None:
-                sections.append([(section.string).strip(), 'https://ocw.mit.edu'+section['href']+'/'])
-    return sections
-    
-def get_videos(videos_pageurl):
-    httpresponse = gethtml(videos_pageurl)
-    video_list = []
-    if(httpresponse[0] != 200):
+        navitem = nav.find('li')
+        while navitem is not None:
+            a_menu = False
+            for item in navitem.find_all('a'):
+                if item['href'] is '#':
+                    a_menu = True
+                    menu = (item.find_parent('div')).find_parent('div')
+                    menu_title = (item.find_next_sibling('a').string).strip()
+                    subsections = (menu.find('ul')).find_all('a')
+                    menu_content = []
+                    for section in subsections:
+                        linktext = section.string
+                        if linktext is not None:
+                            if '.' not in section['href'].split('/')[-1]:
+                                print(section['href'].split('/')[-1])
+                                section['href'] = section['href']+'/'
+                            menu_content.append({'type' : 'section',
+                                                 'title' : linktext.strip(),
+                                                 'url' : 'https://ocw.mit.edu'+section['href']})
+                    structure.append({'type' : 'menu',
+                                      'title' : menu_title,
+                                      'content' : menu_content})
+                else:
+                    linktext = item.string
+                    if linktext is not None:
+                        if '.' not in item['href'].split('/')[-1]:
+                            print(item['href'].split('/')[-1])
+                            item['href'] = item['href'] + '/'
+                        structure.append({'type' : 'section',
+                                          'title' : linktext.strip(),
+                                          'url' : 'https://ocw.mit.edu'+item['href']})
+                if a_menu:
+                    break
+            navitem = navitem.find_next_sibling('li')
+    return structure
+
+
+def parse_section(section):
+    httpresponse = gethtml(section['url'])
+    if (httpresponse[0] != 200):
         exit("Unable to fetch Video listing")
+    videolist = []
+    global total_videos
     parsetree = BeautifulSoup(httpresponse[1], 'lxml')
-    mediacontainer = parsetree.find(id="course_inner_media_gallery")
-    for media in mediacontainer.find_all(class_="medialisting"):
-        videolink = media.find('a');
-        video_list.append([videolink['title'], "https://ocw.mit.edu"+videolink['href']+'/'])
-    return video_list
+    course_main = parsetree.find('main')
+    if course_main['id'] == 'course_inner_media_gallery':
+        for media in course_main.find_all(class_= 'medialisting'):
+            videolink = media.find('a')
+            videolist.append([videolink['title'], "https://ocw.mit.edu" + videolink['href']+'/'])
+    elif course_main.find(class_= 'navigation pagination'):
+        paging_bar = course_main.find(class_= 'navigation pagination')
+        for media in paging_bar.find_all(id = re.compile('flp_btn_.*')):
+            videolink = media.find('a')
+            nav_page = gethtml("https://ocw.mit.edu" + videolink['href']+'/')
+            page_parsetree = BeautifulSoup(nav_page[1], 'lxml')
+            if page_parsetree.find(id = 'media_embed'):
+                videotitle = media.find('span')
+                videolist.append([videotitle.string.strip(), "https://ocw.mit.edu" + videolink['href']+'/'])
+    elif course_main.find(id = 'media-embed') or course_main.find(class_= 'inline-video'):
+        videotitle = parsetree.find('meta', {'name' : 'WT.cg_s'})
+        videolist.append([videotitle['content'].strip(), section['url']])
+    section['videos'] = videolist
+    if len(videolist) is not 0:
+        total_videos = total_videos + len(videolist)
+        print("Videos found:\n")
+        print(*videolist, sep="\n")
+
+
+
+def extract_videoifno(course_structure):
+    for item in course_structure:
+        if item['type'] == 'section':
+            parse_section(item)
+        elif item['type'] == 'menu':
+            for menuitem in item['content']:
+                parse_section(menuitem)
+
+
+def download_resources(course_structure):
+    for item in course_structure:
+        if item['type'] == 'section':
+            if len(item['videos']) is not 0:
+                for video in item['videos']:
+                    downloadvideo(video)
+
     
 
 def ocw_dl(course_url):
@@ -58,19 +131,13 @@ def ocw_dl(course_url):
         else:
             print('An error occured while accessing', course_url, 'HTTP Status Code:', httpresponse[0])
     else:
-        course_sections = get_sections(httpresponse[1])
-        available_sections = {}
-        for section in course_sections:
-            if 'lecture video' in section[0].lower():
-                available_sections['videos'] = section
-            elif 'slides' in section[0].lower():
-                available_sections['slides'] = section
-        video_list = get_videos(available_sections['videos'][1])
-        for video in video_list:
-            print(video[0],"\t",video[1],"\n")
+        course_structure = generate_structure(httpresponse[1])
+        print(*course_structure, sep="\n")
+        extract_videoifno(course_structure)
+        print(*course_structure, sep="\n")
+        print('Total Videos: ', total_videos)
 
 
-
-ocw_dl('https://ocw.mit.edu/courses/electrical-engineering-and-computer-science/6-034-artificial-intelligence-fall-2010/')
+ocw_dl('https://ocw.mit.edu/courses/electrical-engineering-and-computer-science/6-004-computation-structures-spring-2017/')
     
         
