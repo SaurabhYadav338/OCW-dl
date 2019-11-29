@@ -8,18 +8,15 @@ Created on Fri Jul 19 14:49:16 2019
 from bs4 import BeautifulSoup
 import urllib3
 import certifi
-import logging
 import time
 import re
-from ytdl_script import downloadvideo
+import os
+from ytdl_script import download_video
+from resource_grabber import download_file
+from util import sanitize_fs_element
 
 
 http = urllib3.PoolManager(cert_reqs='CERT_REQUIRED', ca_certs=certifi.where())
-logging.basicConfig() 
-logging.getLogger().setLevel(logging.DEBUG)
-requests_log = logging.getLogger("requests.packages.urllib3")
-requests_log.setLevel(logging.DEBUG)
-requests_log.propagate = True
 total_videos = 0
 total_files = 0
 useful_file_formats = {'pdf', 'zip'}
@@ -56,7 +53,9 @@ def generate_structure(course_page):
                                 section['href'] = section['href']+'/'
                             menu_content.append({'type' : 'section',
                                                  'title' : linktext.strip(),
-                                                 'url' : 'https://ocw.mit.edu'+section['href']})
+                                                 'url' : 'https://ocw.mit.edu'+section['href'],
+                                                 'files' : [],
+                                                 'videos': []})
                     structure.append({'type' : 'menu',
                                       'title' : menu_title,
                                       'content' : menu_content})
@@ -68,7 +67,9 @@ def generate_structure(course_page):
                             item['href'] = item['href'] + '/'
                         structure.append({'type' : 'section',
                                           'title' : linktext.strip(),
-                                          'url' : 'https://ocw.mit.edu'+item['href']})
+                                          'url' : 'https://ocw.mit.edu'+item['href'],
+                                          'files' : [],
+                                          'videos' : []})
                 if a_menu:
                     break
             navitem = navitem.find_next_sibling('li')
@@ -89,7 +90,11 @@ def parse_section(section):
         file_format = link['href'].split('.')[-1].strip()
         if link.string is not None:
             if file_format in useful_file_formats and 'transcript' not in link.string.strip() and 'Transcript' not in link.string.strip():
-                downloadable_content.append("https://ocw.mit.edu" + link['href'])
+                host = link['href'].split('/')[0]
+                if len(host.strip()) is 0:
+                    downloadable_content.append("https://ocw.mit.edu" + link['href'])
+                else:
+                    downloadable_content.append(link['href'])
     total_files += len(downloadable_content)
     section['files'] = downloadable_content
     if course_main['id'] == 'course_inner_media_gallery':
@@ -117,7 +122,8 @@ def parse_section(section):
                 break
         if popup_video:
             popup = course_main.find(class_='poplight pagecontainer')
-            video_link = popup['onclick'].split(',')[3]
+            yt_embedlink = popup['onclick'].split(',')[3]
+            video_link = 'https://www.youtube.com/watch?v='+yt_embedlink.split('/')[-1]
         else:
             video_link = section['url']
         videotitle = parsetree.find('meta', {'name' : 'WT.cg_s'})
@@ -130,7 +136,7 @@ def parse_section(section):
 
 
 
-def extract_videoifno(course_structure):
+def extract_resources(course_structure):
     for item in course_structure:
         if item['type'] == 'section':
             parse_section(item)
@@ -139,16 +145,63 @@ def extract_videoifno(course_structure):
                 parse_section(menuitem)
 
 
-def download_resources(course_structure):
+def download_resources(course_structure, course_name):
+    course_name = sanitize_fs_element(course_name)
+    try:
+        os.mkdir(course_name)
+    except FileExistsError:
+        # directory already exists
+        pass
+    os.chdir(course_name)
+    base_dir = os.getcwd()
     for item in course_structure:
         if item['type'] == 'section':
+            section_created = False
+            if len(item['files']) is not 0:
+                if not section_created:
+                    dir = sanitize_fs_element(item['title'])
+                    os.makedirs(dir, exist_ok=True)
+                    os.chdir(dir)
+                    section_created = True
+                for file in item['files']:
+                    download_file(file)
             if len(item['videos']) is not 0:
+                if not section_created:
+                    dir = sanitize_fs_element(item['title'])
+                    os.makedirs(dir, exist_ok=True)
+                    os.chdir(dir)
+                    section_created = True
                 for video in item['videos']:
-                    downloadvideo(video)
+                    download_video(video_url = video[1], video_name = video[0])
+            if section_created:
+                os.chdir(base_dir)
+
+        else:
+            for section in item['content']:
+                section_created = False
+                if len(section['files']) is not 0:
+                    if not section_created:
+                        dir = sanitize_fs_element(item['title'])+'\\'+sanitize_fs_element(section['title'])
+                        os.makedirs(dir, exist_ok=True)
+                        os.chdir(dir)
+                        section_created = True
+                    for file in section['files']:
+                        download_file(file)
+                if len(section['videos']) is not 0:
+                    if not section_created:
+                        dir = sanitize_fs_element(item['title']) + '\\' + sanitize_fs_element(section['title'])
+                        os.makedirs(dir, exist_ok=True)
+                        os.chdir(dir)
+                        section_created = True
+                    for video in section['videos']:
+                        download_video(video_url=video[1], video_name=video[0])
+                if section_created:
+                    os.chdir(base_dir)
 
     
 
 def ocw_dl(course_url):
+    course_name = course_url.split('/')[5]
     httpresponse = gethtml(course_url) 
     if httpresponse[0] != 200:
         if httpresponse[0] == 404:
@@ -158,10 +211,11 @@ def ocw_dl(course_url):
     else:
         course_structure = generate_structure(httpresponse[1])
         print(*course_structure, sep="\n")
-        extract_videoifno(course_structure)
+        extract_resources(course_structure)
         print(*course_structure, sep="\n")
         print('Total Videos: ', total_videos)
         print('Total Files: ', total_files)
+        download_resources(course_structure, course_name)
 
 
 ocw_dl('https://ocw.mit.edu/courses/economics/14-01sc-principles-of-microeconomics-fall-2011/')
